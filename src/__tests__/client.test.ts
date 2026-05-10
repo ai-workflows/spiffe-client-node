@@ -1,4 +1,12 @@
 import { describe, expect, it } from "vitest";
+import {
+  SignJWT,
+  exportJWK,
+  generateKeyPair,
+  type CryptoKey,
+  type JWTVerifyGetKey,
+  type KeyLike,
+} from "jose";
 import { SpiffeClient } from "../client.js";
 import { GoogleTokenFetcher } from "../google_token.js";
 import { SvidCache } from "../cache.js";
@@ -210,44 +218,72 @@ describe("SpiffeClient.fetch", () => {
   });
 });
 
-describe("SpiffeClient.verify (claim-only, B1.2)", () => {
+describe("SpiffeClient.verify (signature + claims)", () => {
   const expectedAudience = "spiffe://fleet.build/services/ais/staging" as SpiffeId;
   const callerId = "spiffe://fleet.build/services/portal/staging" as SpiffeId;
+
+  // Generate one P-256 keypair for the suite; sign tokens with privateKey,
+  // give the public key to SpiffeClient as the JWKS resolver.
+  let privateKey: CryptoKey | KeyLike;
+  let getKey: JWTVerifyGetKey;
+
+  async function setup(): Promise<void> {
+    if (privateKey) return;
+    const kp = await generateKeyPair("ES256", { extractable: true });
+    privateKey = kp.privateKey;
+    const jwk = await exportJWK(kp.publicKey);
+    jwk.alg = "ES256";
+    jwk.use = "sig";
+    jwk.kid = "test-key-1";
+    // jose's JWTVerifyGetKey is `(header, token) => Promise<KeyLike>`.
+    getKey = async () => kp.publicKey;
+  }
+
+  async function signToken(claims: Record<string, unknown>): Promise<string> {
+    await setup();
+    return new SignJWT(claims)
+      .setProtectedHeader({ alg: "ES256", kid: "test-key-1" })
+      .sign(privateKey);
+  }
 
   function makeClient(): SpiffeClient {
     return new SpiffeClient({
       bridgeUrl: "https://b.fleet.internal",
       selfId: callerId,
+      jwks: getKey,
     });
   }
 
-  it("accepts a well-formed token", async () => {
+  it("accepts a well-formed signed token", async () => {
+    await setup();
     const exp = Math.floor(Date.now() / 1000) + 3600;
-    const token = fakeJwt({ sub: callerId, aud: expectedAudience, exp });
+    const token = await signToken({ sub: callerId, aud: expectedAudience, exp });
     const result = await makeClient().verify(`Bearer ${token}`, { expectedAudience });
     expect(result.sub).toBe(callerId);
   });
 
-  it("rejects expired token", async () => {
-    const token = fakeJwt({
+  it("rejects expired signed token", async () => {
+    await setup();
+    const token = await signToken({
       sub: callerId,
       aud: expectedAudience,
       exp: Math.floor(Date.now() / 1000) - 60,
     });
     await expect(
       makeClient().verify(`Bearer ${token}`, { expectedAudience }),
-    ).rejects.toThrow(/expired/);
+    ).rejects.toThrow();
   });
 
   it("rejects audience mismatch", async () => {
-    const token = fakeJwt({
+    await setup();
+    const token = await signToken({
       sub: callerId,
       aud: "spiffe://fleet.build/services/wrong/staging",
       exp: Math.floor(Date.now() / 1000) + 3600,
     });
     await expect(
       makeClient().verify(`Bearer ${token}`, { expectedAudience }),
-    ).rejects.toThrow(/audience/);
+    ).rejects.toThrow();
   });
 
   it("rejects missing Bearer", async () => {
@@ -257,7 +293,8 @@ describe("SpiffeClient.verify (claim-only, B1.2)", () => {
   });
 
   it("rejects non-SPIFFE sub", async () => {
-    const token = fakeJwt({
+    await setup();
+    const token = await signToken({
       sub: "alice@example.com",
       aud: expectedAudience,
       exp: Math.floor(Date.now() / 1000) + 3600,
@@ -265,6 +302,19 @@ describe("SpiffeClient.verify (claim-only, B1.2)", () => {
     await expect(
       makeClient().verify(`Bearer ${token}`, { expectedAudience }),
     ).rejects.toThrow(/sub/);
+  });
+
+  it("rejects token signed with the wrong key", async () => {
+    await setup();
+    // Mint a token with a DIFFERENT key, then verify against the suite's getKey.
+    const otherKp = await generateKeyPair("ES256", { extractable: true });
+    const exp = Math.floor(Date.now() / 1000) + 3600;
+    const badToken = await new SignJWT({ sub: callerId, aud: expectedAudience, exp })
+      .setProtectedHeader({ alg: "ES256", kid: "test-key-1" })
+      .sign(otherKp.privateKey);
+    await expect(
+      makeClient().verify(`Bearer ${badToken}`, { expectedAudience }),
+    ).rejects.toThrow();
   });
 });
 

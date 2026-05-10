@@ -1,6 +1,8 @@
+import { jwtVerify, type JWTVerifyGetKey } from "jose";
 import { SvidCache } from "./cache.js";
 import { GoogleTokenFetcher } from "./google_token.js";
-import { decodeJwtPayload, isSpiffeId, type JwtSvid, type SpiffeId } from "./types.js";
+import { buildBridgeJwks } from "./jwks.js";
+import { isSpiffeId, type JwtSvid, type SpiffeId } from "./types.js";
 
 export interface SpiffeClientOptions {
   /**
@@ -31,6 +33,12 @@ export interface SpiffeClientOptions {
    * 30-minute refresh threshold.
    */
   cache?: SvidCache;
+
+  /**
+   * Override the JWKS resolver (tests only). Defaults to fetching from
+   * `${bridgeUrl}/.well-known/jwks.json`.
+   */
+  jwks?: JWTVerifyGetKey;
 }
 
 export interface FetchOptions extends RequestInit {
@@ -52,6 +60,7 @@ export class SpiffeClient {
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly google: GoogleTokenFetcher;
   private readonly cache: SvidCache;
+  private readonly jwks: JWTVerifyGetKey;
 
   constructor(options: SpiffeClientOptions) {
     if (!options.bridgeUrl) {
@@ -68,6 +77,7 @@ export class SpiffeClient {
     this.google =
       options.googleTokens ?? new GoogleTokenFetcher({ fetchImpl: this.fetchImpl });
     this.cache = options.cache ?? new SvidCache();
+    this.jwks = options.jwks ?? buildBridgeJwks(this.bridgeUrl, { fetchImpl: this.fetchImpl });
   }
 
   /**
@@ -152,20 +162,15 @@ export class SpiffeClient {
   }
 
   /**
-   * Server-side verification of an inbound JWT-SVID.
+   * Server-side verification of an inbound JWT-SVID. Verifies signature
+   * (against the bridge's JWKS), expiration, audience, and that `sub`
+   * is a valid SPIFFE ID. Returns the caller's SPIFFE ID on success.
    *
-   * B1.2 ships claim-only verification: parses the JWT, checks
-   * `exp`/`aud`/`sub`, returns the caller's SPIFFE ID. **Signature
-   * verification is intentionally NOT performed here** — that requires
-   * the SPIFFE trust bundle, which lands in B1.3 alongside real
-   * SPIRE-Server-issued SVIDs.
-   *
-   * Until then, server-side `requireSpiffeOrM2M` middleware should
-   * also enforce that the bridge's dev signer is in use (check the
-   * `dev_signer: true` claim) and that the network path from caller
-   * to callee runs through trusted infra (Tailscale + IAP, not the
-   * public internet). B1.3 swaps this for real signature verification
-   * against the trust bundle.
+   * Phase 1 detail: in dev-signer mode the bridge signs SVIDs with its
+   * local ECDSA P-256 key, exposed at `/.well-known/jwks.json`. B1.3
+   * swaps the dev signer for real SPIRE-Server-issued SVIDs and the
+   * verification source becomes the SPIFFE trust bundle — but the
+   * caller-facing API on this method stays unchanged.
    */
   async verify(
     authHeader: string,
@@ -182,21 +187,24 @@ export class SpiffeClient {
       throw new Error("SpiffeClient.verify: empty Bearer token");
     }
 
-    const claims = decodeJwtPayload(token);
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (typeof claims.exp !== "number" || claims.exp <= nowSec) {
-      throw new Error("SpiffeClient.verify: token expired");
-    }
-    if (claims.aud !== opts.expectedAudience) {
+    let payload: { sub?: unknown; aud?: unknown; iss?: unknown };
+    try {
+      const result = await jwtVerify(token, this.jwks, {
+        audience: opts.expectedAudience,
+        algorithms: ["ES256"],
+      });
+      payload = result.payload;
+    } catch (err) {
       throw new Error(
-        `SpiffeClient.verify: audience mismatch; got ${JSON.stringify(claims.aud)}, want ${opts.expectedAudience}`,
+        `SpiffeClient.verify: signature/claims verification failed: ${(err as Error).message}`,
       );
     }
-    if (typeof claims.sub !== "string" || !isSpiffeId(claims.sub)) {
+
+    if (typeof payload.sub !== "string" || !isSpiffeId(payload.sub)) {
       throw new Error(
-        `SpiffeClient.verify: invalid sub claim: ${JSON.stringify(claims.sub)}`,
+        `SpiffeClient.verify: invalid sub claim: ${JSON.stringify(payload.sub)}`,
       );
     }
-    return { sub: claims.sub };
+    return { sub: payload.sub };
   }
 }
