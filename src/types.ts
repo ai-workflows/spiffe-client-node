@@ -25,3 +25,25 @@ export interface JwtSvid {
   /** SPIFFE ID this SVID asserts the caller has. */
   spiffeId: SpiffeId;
 }
+
+/**
+ * Decode the (base64url-padded) payload of a JWT into its claims object.
+ * Does NOT verify the signature — see SpiffeClient.verify's docstring.
+ */
+export function decodeJwtPayload(token: string): Record<string, unknown> {
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw new Error(`decodeJwtPayload: token must have 3 parts; got ${parts.length}`);
+  }
+  const padded = parts[1] + "===".slice(0, (4 - (parts[1].length % 4)) % 4);
+  const decoded = Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString(
+    "utf8",
+  );
+  try {
+    return JSON.parse(decoded) as Record<string, unknown>;
+  } catch (err) {
+    throw new Error(
+      `decodeJwtPayload: payload is not valid JSON: ${(err as Error).message}`,
+    );
+  }
+}
