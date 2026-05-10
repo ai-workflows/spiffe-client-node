@@ -20,8 +20,11 @@
  */
 
 export { SpiffeClient, type SpiffeClientOptions, type FetchOptions } from "./client.js";
+export { GoogleTokenFetcher } from "./google_token.js";
+export { SvidCache } from "./cache.js";
 export {
   type JwtSvid,
   type SpiffeId,
   isSpiffeId,
+  decodeJwtPayload,
 } from "./types.js";

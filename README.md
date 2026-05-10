@@ -6,7 +6,9 @@ Phase 1 of the rollout in [`ai-workflows/docs/architecture/design/spiffe-rollout
 
 ## Status
 
-**Phase 1 scaffold (C1.1)**. Public API, types, and tests are in. The actual fetch / cache / refresh / verify logic throws `not implemented` — those land in `C1.2` once `spire-bridge` exposes the real `/svid/jwt` endpoint.
+**Phase 1 implementation (C1.2)**. `tokenFor` / `fetch` / `verify` all work end-to-end against `spire-bridge` (B1.2 ships a dev signer; B1.3 swaps in real SPIRE-Server-issued SVIDs without changing this client's API).
+
+Outstanding for B1.3: this client's `verify` does **claim-only** validation (`exp`/`aud`/`sub`) — signature verification against the SPIFFE trust bundle lands when the bridge issues real SVIDs.
 
 ## Usage (target shape)
 
