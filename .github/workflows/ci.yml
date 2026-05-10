@@ -16,9 +16,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
+          # No `cache: npm` until a package-lock.json lands; setup-node
+          # errors out if it's set without a lockfile in the workspace.
 
-      - run: npm install
+      - run: npm install --no-audit --no-fund
       - run: npm run lint
       - run: npm test
       - run: npm run build
