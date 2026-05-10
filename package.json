@@ -22,7 +22,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
-    "prepack": "npm run build"
+    "prepare": "npm run build"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
