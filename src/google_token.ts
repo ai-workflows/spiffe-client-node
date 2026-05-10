@@ -29,7 +29,12 @@ export class GoogleTokenFetcher {
   }
 
   async fetchIdToken(audience: string): Promise<string> {
-    const url = `${this.metadataBase}?audience=${encodeURIComponent(audience)}`;
+    // `format=full` is required for the JWT to include the SA `email`
+    // claim; spire-bridge rejects tokens that lack it. The default
+    // ("standard") format omits email and a few other identity-rich
+    // fields. See ai-workflows memory:
+    // feedback_gce_id_token_format_full.md.
+    const url = `${this.metadataBase}?audience=${encodeURIComponent(audience)}&format=full`;
     const res = await this.fetchImpl(url, {
       headers: { "Metadata-Flavor": "Google" },
     });
